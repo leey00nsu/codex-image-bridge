@@ -4,6 +4,7 @@ import {
   access,
   lstat,
   mkdtemp,
+  readdir,
   readFile,
   rm,
   stat,
@@ -331,16 +332,64 @@ async function exists(filePath) {
   }
 }
 
-async function resolveGeneratedImagePath({ outputPath, tempDir, cliOutput }) {
+function isSupportedImagePath(filePath) {
+  return /\.(?:png|jpe?g|webp)$/i.test(filePath);
+}
+
+async function findImagesInDirectory({ directory, tempDir, excludedPaths }) {
+  const entries = [];
+  const dirents = await readdir(directory, { withFileTypes: true });
+  for (const dirent of dirents) {
+    const candidate = path.join(directory, dirent.name);
+    if (!isAllowedFallbackPath(candidate, tempDir)) {
+      continue;
+    }
+    if (dirent.isDirectory()) {
+      entries.push(
+        ...(await findImagesInDirectory({ directory: candidate, tempDir, excludedPaths })),
+      );
+      continue;
+    }
+    if (!dirent.isFile() || !isSupportedImagePath(candidate)) {
+      continue;
+    }
+    const resolved = path.resolve(candidate);
+    if (excludedPaths.has(resolved)) {
+      continue;
+    }
+    const metadata = await stat(candidate);
+    entries.push({ filePath: candidate, mtimeMs: metadata.mtimeMs });
+  }
+  return entries;
+}
+
+async function findGeneratedImageInTempDir({ tempDir, excludedPaths }) {
+  const candidates = await findImagesInDirectory({ directory: tempDir, tempDir, excludedPaths });
+  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  return candidates[0]?.filePath ?? null;
+}
+
+async function resolveGeneratedImagePath({
+  outputPath,
+  tempDir,
+  cliOutput,
+  inputImagePaths = [],
+}) {
+  const excludedPaths = new Set(inputImagePaths.map((inputPath) => path.resolve(inputPath)));
   if (await exists(outputPath)) {
     return outputPath;
   }
   for (const candidate of extractImagePaths(cliOutput)) {
-    if (isAllowedFallbackPath(candidate, tempDir) && (await exists(candidate))) {
+    const resolved = path.resolve(candidate);
+    if (
+      !excludedPaths.has(resolved) &&
+      isAllowedFallbackPath(candidate, tempDir) &&
+      (await exists(candidate))
+    ) {
       return candidate;
     }
   }
-  return null;
+  return findGeneratedImageInTempDir({ tempDir, excludedPaths });
 }
 
 export async function runCodexGeneration(input, options = {}) {
@@ -381,6 +430,7 @@ export async function runCodexGeneration(input, options = {}) {
       outputPath,
       tempDir,
       cliOutput: `${result.stdout}\n${result.stderr}`,
+      inputImagePaths,
     });
     if (!imagePath) {
       throw makeBridgeError("CODEX_IMAGE_OUTPUT_NOT_FOUND", 502);

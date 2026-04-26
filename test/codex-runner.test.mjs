@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import {
   buildCodexArgs,
@@ -6,6 +9,7 @@ import {
   decodeDataUrlImage,
   makeBridgeError,
   mapCodexError,
+  runCodexGeneration,
 } from "../src/codex-runner.mjs";
 
 const BASE_PAYLOAD = {
@@ -102,4 +106,44 @@ test("mapCodexError normalizes operational failures without leaking raw stderr",
     "CODEX_OAUTH_REQUIRED",
   );
   assert.equal(mapCodexError(new Error("unexpected stderr secret")).message.includes("secret"), false);
+});
+
+test("runCodexGeneration falls back to image files in the temp directory", async () => {
+  const tempRoot = await mkdtemp(path.join(tmpdir(), "codex-runner-test-"));
+  const fakeCodex = path.join(tempRoot, "fake-codex.mjs");
+  const pngBytes = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x00,
+  ];
+
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "import { writeFileSync } from 'node:fs';",
+      "import path from 'node:path';",
+      "if (process.argv[2] === 'login' && process.argv[3] === 'status') {",
+      "  console.log('Logged in using ChatGPT');",
+      "  process.exit(0);",
+      "}",
+      `writeFileSync(path.join(process.cwd(), 'alternate-output.png'), Buffer.from([${pngBytes.join(",")}]))`,
+      "console.log('image generated without printing a path');",
+    ].join("\n"),
+  );
+  await chmod(fakeCodex, 0o755);
+
+  try {
+    const result = await runCodexGeneration(BASE_PAYLOAD, {
+      command: fakeCodex,
+      sourceEnv: {
+        PATH: process.env.PATH,
+        HOME: tempRoot,
+      },
+    });
+
+    assert.equal(result.images.length, 1);
+    assert.ok(result.images[0].startsWith("data:image/png;base64,"));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
