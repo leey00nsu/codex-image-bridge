@@ -1,0 +1,15 @@
+{
+  "name": "codex-image-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Small HTTP bridge for Codex CLI image generation.",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test",
+    "lint": "node --check src/*.mjs test/*.mjs"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
