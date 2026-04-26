@@ -4,6 +4,7 @@ import {
   buildCodexArgs,
   buildCodexEnv,
   decodeDataUrlImage,
+  makeBridgeError,
   mapCodexError,
 } from "../src/codex-runner.mjs";
 
@@ -96,5 +97,9 @@ test("mapCodexError normalizes operational failures without leaking raw stderr",
     "CODEX_IMAGE_TIMEOUT",
   );
   assert.equal(mapCodexError(new Error("CODEX_OAUTH_REQUIRED")).code, "CODEX_OAUTH_REQUIRED");
+  assert.equal(
+    mapCodexError(makeBridgeError("CODEX_OAUTH_REQUIRED", 503)).code,
+    "CODEX_OAUTH_REQUIRED",
+  );
   assert.equal(mapCodexError(new Error("unexpected stderr secret")).message.includes("secret"), false);
 });

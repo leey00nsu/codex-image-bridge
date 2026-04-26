@@ -159,6 +159,20 @@ function isTimeoutError(error) {
   );
 }
 
+function defaultStatusForCode(code) {
+  switch (code) {
+    case "CODEX_BRIDGE_INPUT_INVALID":
+      return 400;
+    case "CODEX_CLI_NOT_FOUND":
+    case "CODEX_OAUTH_REQUIRED":
+      return 503;
+    case "CODEX_IMAGE_TIMEOUT":
+      return 504;
+    default:
+      return 502;
+  }
+}
+
 export function mapCodexError(error) {
   if (isCliMissingError(error)) {
     return makeBridgeError("CODEX_CLI_NOT_FOUND", 503);
@@ -166,9 +180,20 @@ export function mapCodexError(error) {
   if (isTimeoutError(error)) {
     return makeBridgeError("CODEX_IMAGE_TIMEOUT", 504);
   }
-  if (error instanceof Error && ERROR_MESSAGES[error.message]) {
-    const status = error.status || (error.message === "CODEX_BRIDGE_INPUT_INVALID" ? 400 : 503);
-    return makeBridgeError(error.message, status);
+  if (error instanceof Error) {
+    const errorCode =
+      typeof error.code === "string" && ERROR_MESSAGES[error.code]
+        ? error.code
+        : ERROR_MESSAGES[error.message]
+          ? error.message
+          : null;
+    if (errorCode) {
+      const status = error.status || defaultStatusForCode(errorCode);
+      return makeBridgeError(errorCode, status);
+    }
+    if (typeof error.code === "string" && error.status) {
+      return error;
+    }
   }
   return makeBridgeError("CODEX_IMAGE_GENERATION_FAILED", 502);
 }
@@ -196,6 +221,18 @@ async function ensureChatGptOAuth({ command, env }) {
   } catch (error) {
     throw mapCodexError(error);
   }
+}
+
+export async function checkCodexReady(options = {}) {
+  const command = options.command || process.env.CODEX_BRIDGE_CODEX_COMMAND || DEFAULT_COMMAND;
+  const outputPath = path.join(tmpdir(), "codex-image-bridge-ready.png");
+  const env = buildCodexEnv({
+    sourceEnv: options.sourceEnv || process.env,
+    modelId: DEFAULT_MODEL_ID,
+    outputPath,
+  });
+  await ensureChatGptOAuth({ command, env });
+  return { ok: true };
 }
 
 function detectImageMime(buffer) {

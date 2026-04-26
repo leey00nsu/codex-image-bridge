@@ -3,6 +3,7 @@ import { once } from "node:events";
 import http from "node:http";
 import { test } from "node:test";
 import { createBridgeServer } from "../src/http.mjs";
+import { makeBridgeError } from "../src/codex-runner.mjs";
 
 async function withServer(options, fn) {
   const server = createBridgeServer(options);
@@ -113,6 +114,27 @@ test("generate endpoint maps runner errors to stable json responses", async () =
         body: { prompt: "x" },
       });
       assert.equal(response.status, 503);
+      assert.equal(response.body.error.code, "CODEX_OAUTH_REQUIRED");
+      assert.match(response.body.error.message, /ChatGPT OAuth/);
+    },
+  );
+});
+
+test("ready endpoint reports the underlying readiness error", async () => {
+  await withServer(
+    {
+      token: "secret-token",
+      runGeneration: async () => {
+        throw new Error("should not run");
+      },
+      checkReady: async () => {
+        throw makeBridgeError("CODEX_OAUTH_REQUIRED", 503);
+      },
+    },
+    async (baseUrl) => {
+      const response = await requestJson(baseUrl, "/ready");
+      assert.equal(response.status, 503);
+      assert.equal(response.body.status, "not_ready");
       assert.equal(response.body.error.code, "CODEX_OAUTH_REQUIRED");
       assert.match(response.body.error.message, /ChatGPT OAuth/);
     },

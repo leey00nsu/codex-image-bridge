@@ -10,6 +10,10 @@ The service owns the Codex CLI and `CODEX_HOME`; client applications call it ove
 
 Returns `200` when the bridge process is alive.
 
+### `GET /ready`
+
+Returns `200` when Codex CLI is installed and `codex login status` reports ChatGPT OAuth login. This endpoint does not run image generation.
+
 ### `POST /v1/images/generate`
 
 Requires:

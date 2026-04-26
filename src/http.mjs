@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 import {
   ERROR_MESSAGES,
+  checkCodexReady,
   makeBridgeError,
   mapCodexError,
   normalizeGenerationPayload,
@@ -20,13 +21,41 @@ function jsonResponse(response, status, body) {
 }
 
 function errorResponse(response, error) {
-  const normalized = error?.code ? error : mapCodexError(error);
+  const normalized = mapCodexError(error);
   jsonResponse(response, normalized.status || 500, {
     error: {
       code: normalized.code || "CODEX_IMAGE_GENERATION_FAILED",
       message: normalized.message || ERROR_MESSAGES.CODEX_IMAGE_GENERATION_FAILED,
     },
   });
+  return normalized;
+}
+
+function notReadyResponse(response, error) {
+  const normalized = mapCodexError(error);
+  jsonResponse(response, normalized.status || 503, {
+    status: "not_ready",
+    error: {
+      code: normalized.code || "CODEX_IMAGE_GENERATION_FAILED",
+      message: normalized.message || ERROR_MESSAGES.CODEX_IMAGE_GENERATION_FAILED,
+    },
+  });
+  return normalized;
+}
+
+function logBridgeFailure(request, error, startedAt) {
+  const normalized = mapCodexError(error);
+  console.error(
+    JSON.stringify({
+      level: "error",
+      event: "bridge_request_failed",
+      method: request.method,
+      path: new URL(request.url || "/", "http://127.0.0.1").pathname,
+      status: normalized.status || 500,
+      code: normalized.code || "CODEX_IMAGE_GENERATION_FAILED",
+      durationMs: Date.now() - startedAt,
+    }),
+  );
 }
 
 function readJsonBody(request, maxBodyBytes) {
@@ -84,20 +113,10 @@ export function createBridgeServer({
   checkReady,
   maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
 } = {}) {
-  const readinessCheck =
-    checkReady ||
-    (async () => {
-      await runGeneration({
-        prompt: "health check",
-        modelId: "gpt-image-2",
-        agentModel: "gpt-5.5",
-        width: 16,
-        height: 16,
-      });
-      return { ok: true };
-    });
+  const readinessCheck = checkReady || checkCodexReady;
 
   return http.createServer(async (request, response) => {
+    const startedAt = Date.now();
     try {
       const url = new URL(request.url || "/", "http://127.0.0.1");
       if (request.method === "GET" && url.pathname === "/health") {
@@ -108,11 +127,9 @@ export function createBridgeServer({
         try {
           await readinessCheck();
           jsonResponse(response, 200, { status: "ready" });
-        } catch {
-          jsonResponse(response, 503, {
-            status: "not_ready",
-            error: { code: "CODEX_OAUTH_REQUIRED", message: ERROR_MESSAGES.CODEX_OAUTH_REQUIRED },
-          });
+        } catch (error) {
+          notReadyResponse(response, error);
+          logBridgeFailure(request, error, startedAt);
         }
         return;
       }
@@ -131,6 +148,7 @@ export function createBridgeServer({
       throw notFound;
     } catch (error) {
       errorResponse(response, error);
+      logBridgeFailure(request, error, startedAt);
     }
   });
 }
