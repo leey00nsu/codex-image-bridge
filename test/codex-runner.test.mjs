@@ -37,6 +37,8 @@ test("buildCodexArgs uses imagegen prompt and local sandboxed codex exec flags",
   assert.ok(args.includes("--ignore-rules"));
   assert.ok(args.at(-1).includes("$imagegen Generate exactly one image with gpt-image-2"));
   assert.ok(args.at(-1).includes("Save or copy the final image to /tmp/codex-bridge-123/result.png"));
+  assert.ok(args.at(-1).includes("CODEX_HOME/generated_images"));
+  assert.ok(args.at(-1).includes("Do not use macOS-only tools"));
 });
 
 test("buildCodexArgs inserts prompt separator after image attachments", () => {
