@@ -326,6 +326,12 @@ function isAllowedFallbackPath(filePath, tempDir) {
   return resolved === resolvedTempDir || resolved.startsWith(`${resolvedTempDir}${path.sep}`);
 }
 
+function isPathInside(filePath, rootDir) {
+  const resolved = path.resolve(filePath);
+  const resolvedRoot = path.resolve(rootDir);
+  return resolved === resolvedRoot || resolved.startsWith(`${resolvedRoot}${path.sep}`);
+}
+
 async function exists(filePath) {
   try {
     await stat(filePath);
@@ -339,17 +345,32 @@ function isSupportedImagePath(filePath) {
   return /\.(?:png|jpe?g|webp)$/i.test(filePath);
 }
 
-async function findImagesInDirectory({ directory, tempDir, excludedPaths }) {
+async function findImagesInDirectory({
+  directory,
+  rootDir,
+  excludedPaths,
+  minMtimeMs = 0,
+}) {
   const entries = [];
-  const dirents = await readdir(directory, { withFileTypes: true });
+  let dirents;
+  try {
+    dirents = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return entries;
+  }
   for (const dirent of dirents) {
     const candidate = path.join(directory, dirent.name);
-    if (!isAllowedFallbackPath(candidate, tempDir)) {
+    if (!isPathInside(candidate, rootDir)) {
       continue;
     }
     if (dirent.isDirectory()) {
       entries.push(
-        ...(await findImagesInDirectory({ directory: candidate, tempDir, excludedPaths })),
+        ...(await findImagesInDirectory({
+          directory: candidate,
+          rootDir,
+          excludedPaths,
+          minMtimeMs,
+        })),
       );
       continue;
     }
@@ -361,13 +382,73 @@ async function findImagesInDirectory({ directory, tempDir, excludedPaths }) {
       continue;
     }
     const metadata = await stat(candidate);
+    if (metadata.mtimeMs < minMtimeMs) {
+      continue;
+    }
     entries.push({ filePath: candidate, mtimeMs: metadata.mtimeMs });
   }
   return entries;
 }
 
 async function findGeneratedImageInTempDir({ tempDir, excludedPaths }) {
-  const candidates = await findImagesInDirectory({ directory: tempDir, tempDir, excludedPaths });
+  const candidates = await findImagesInDirectory({
+    directory: tempDir,
+    rootDir: tempDir,
+    excludedPaths,
+  });
+  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  return candidates[0]?.filePath ?? null;
+}
+
+function extractSessionIds(output) {
+  const sessionIds = new Set();
+  for (const match of output.matchAll(/session id:\s*([0-9a-z-]+)/gi)) {
+    sessionIds.add(match[1]);
+  }
+  return [...sessionIds];
+}
+
+function generatedImageRoots(env) {
+  const roots = [];
+  if (env.CODEX_HOME) {
+    roots.push(path.join(env.CODEX_HOME, "generated_images"));
+  }
+  if (env.HOME) {
+    roots.push(path.join(env.HOME, ".codex", "generated_images"));
+  }
+  return [...new Set(roots.map((root) => path.resolve(root)))];
+}
+
+async function findGeneratedImageInCodexHome({ env, cliOutput, startedAtMs }) {
+  const roots = generatedImageRoots(env);
+  const sessionIds = extractSessionIds(cliOutput);
+  const candidates = [];
+
+  for (const rootDir of roots) {
+    for (const sessionId of sessionIds) {
+      candidates.push(
+        ...(await findImagesInDirectory({
+          directory: path.join(rootDir, sessionId),
+          rootDir,
+          excludedPaths: new Set(),
+        })),
+      );
+    }
+  }
+
+  if (candidates.length === 0) {
+    for (const rootDir of roots) {
+      candidates.push(
+        ...(await findImagesInDirectory({
+          directory: rootDir,
+          rootDir,
+          excludedPaths: new Set(),
+          minMtimeMs: startedAtMs - 5_000,
+        })),
+      );
+    }
+  }
+
   candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
   return candidates[0]?.filePath ?? null;
 }
@@ -376,6 +457,8 @@ async function resolveGeneratedImagePath({
   outputPath,
   tempDir,
   cliOutput,
+  env,
+  startedAtMs,
   inputImagePaths = [],
 }) {
   const excludedPaths = new Set(inputImagePaths.map((inputPath) => path.resolve(inputPath)));
@@ -392,7 +475,10 @@ async function resolveGeneratedImagePath({
       return candidate;
     }
   }
-  return findGeneratedImageInTempDir({ tempDir, excludedPaths });
+  return (
+    (await findGeneratedImageInTempDir({ tempDir, excludedPaths })) ||
+    findGeneratedImageInCodexHome({ env, cliOutput, startedAtMs })
+  );
 }
 
 export async function runCodexGeneration(input, options = {}) {
@@ -404,6 +490,7 @@ export async function runCodexGeneration(input, options = {}) {
   );
   const tempDir = await mkdtemp(path.join(tmpdir(), "codex-image-bridge-"));
   const outputPath = path.join(tempDir, OUTPUT_FILENAME);
+  const startedAtMs = Date.now();
   const env = buildCodexEnv({
     sourceEnv: options.sourceEnv || process.env,
     modelId: payload.modelId,
@@ -433,6 +520,8 @@ export async function runCodexGeneration(input, options = {}) {
       outputPath,
       tempDir,
       cliOutput: `${result.stdout}\n${result.stderr}`,
+      env,
+      startedAtMs,
       inputImagePaths,
     });
     if (!imagePath) {

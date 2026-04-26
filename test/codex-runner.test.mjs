@@ -149,3 +149,49 @@ test("runCodexGeneration falls back to image files in the temp directory", async
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("runCodexGeneration falls back to CODEX_HOME generated images", async () => {
+  const tempRoot = await mkdtemp(path.join(tmpdir(), "codex-runner-home-test-"));
+  const fakeCodex = path.join(tempRoot, "fake-codex.mjs");
+  const codexHome = path.join(tempRoot, ".codex");
+  const pngBytes = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x00,
+  ];
+
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "import { mkdirSync, writeFileSync } from 'node:fs';",
+      "import path from 'node:path';",
+      "if (process.argv[2] === 'login' && process.argv[3] === 'status') {",
+      "  console.log('Logged in using ChatGPT');",
+      "  process.exit(0);",
+      "}",
+      "const sessionId = 'session-from-output';",
+      "const imageDir = path.join(process.env.CODEX_HOME, 'generated_images', sessionId);",
+      "mkdirSync(imageDir, { recursive: true });",
+      `writeFileSync(path.join(imageDir, 'generated.png'), Buffer.from([${pngBytes.join(",")}]))`,
+      "console.log(`session id: ${sessionId}`);",
+      "console.log('image generated in CODEX_HOME only');",
+    ].join("\n"),
+  );
+  await chmod(fakeCodex, 0o755);
+
+  try {
+    const result = await runCodexGeneration(BASE_PAYLOAD, {
+      command: fakeCodex,
+      sourceEnv: {
+        PATH: process.env.PATH,
+        HOME: tempRoot,
+        CODEX_HOME: codexHome,
+      },
+    });
+
+    assert.equal(result.images.length, 1);
+    assert.ok(result.images[0].startsWith("data:image/png;base64,"));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
