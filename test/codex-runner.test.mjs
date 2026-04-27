@@ -7,6 +7,7 @@ import {
   buildCodexArgs,
   buildCodexEnv,
   decodeDataUrlImage,
+  extractSessionIds,
   makeBridgeError,
   mapCodexError,
   runCodexGeneration,
@@ -20,7 +21,7 @@ const BASE_PAYLOAD = {
   height: 1024,
 };
 
-test("buildCodexArgs uses imagegen prompt and local sandboxed codex exec flags", () => {
+test("buildCodexArgs uses thin imagegen skill dispatcher flags", () => {
   const args = buildCodexArgs({
     payload: BASE_PAYLOAD,
     tempDir: "/tmp/codex-bridge-123",
@@ -28,17 +29,21 @@ test("buildCodexArgs uses imagegen prompt and local sandboxed codex exec flags",
     inputImagePaths: [],
   });
 
-  assert.deepEqual(args.slice(0, 2), ["--ask-for-approval", "never"]);
-  assert.equal(args[2], "exec");
+  assert.equal(args[0], "exec");
+  assert.ok(args.includes("--full-auto"));
+  assert.ok(args.includes("--json"));
+  assert.equal(args[args.indexOf("--enable") + 1], "image_generation");
+  assert.equal(args[args.indexOf("-c") + 1], 'model_reasoning_effort="low"');
   assert.equal(args[args.indexOf("--model") + 1], "gpt-5.5");
-  assert.equal(args[args.indexOf("--sandbox") + 1], "workspace-write");
+  assert.equal(args[args.indexOf("-C") + 1], "/tmp/codex-bridge-123");
   assert.ok(args.includes("--ephemeral"));
-  assert.ok(args.includes("--ignore-user-config"));
-  assert.ok(args.includes("--ignore-rules"));
-  assert.ok(args.at(-1).includes("$imagegen Generate exactly one image with gpt-image-2"));
-  assert.ok(args.at(-1).includes("Save or copy the final image to /tmp/codex-bridge-123/result.png"));
-  assert.ok(args.at(-1).includes("CODEX_HOME/generated_images"));
-  assert.ok(args.at(-1).includes("Do not use macOS-only tools"));
+  assert.ok(!args.includes("--ignore-user-config"));
+  assert.ok(!args.includes("--ignore-rules"));
+  assert.ok(args.at(-1).includes("Use the imagegen skill."));
+  assert.ok(args.at(-1).includes("Built-in image_gen tool path only"));
+  assert.ok(args.at(-1).includes("gpt-image-2"));
+  assert.ok(args.at(-1).includes(BASE_PAYLOAD.prompt));
+  assert.ok(!args.at(-1).includes("Save or copy the final image to /tmp/codex-bridge-123/result.png"));
 });
 
 test("buildCodexArgs inserts prompt separator after image attachments", () => {
@@ -52,7 +57,7 @@ test("buildCodexArgs inserts prompt separator after image attachments", () => {
   const imageIndex = args.indexOf("--image");
   assert.equal(args[imageIndex + 1], "/tmp/codex-bridge-123/input-1.png");
   assert.equal(args[imageIndex + 2], "--");
-  assert.ok(args[imageIndex + 3].includes("Use the attached input image as visual edit/reference input."));
+  assert.ok(args[imageIndex + 3].includes("The attached image is the edit/reference input."));
 });
 
 test("buildCodexEnv only forwards the small allowlist needed by codex", () => {
@@ -110,6 +115,18 @@ test("mapCodexError normalizes operational failures without leaking raw stderr",
   assert.equal(mapCodexError(new Error("unexpected stderr secret")).message.includes("secret"), false);
 });
 
+test("extractSessionIds reads Codex JSONL thread events and legacy session text", () => {
+  assert.deepEqual(
+    extractSessionIds(
+      [
+        JSON.stringify({ type: "thread.started", thread_id: "json-thread-id" }),
+        "session id: legacy-session-id",
+      ].join("\n"),
+    ),
+    ["json-thread-id", "legacy-session-id"],
+  );
+});
+
 test("runCodexGeneration falls back to image files in the temp directory", async () => {
   const tempRoot = await mkdtemp(path.join(tmpdir(), "codex-runner-test-"));
   const fakeCodex = path.join(tempRoot, "fake-codex.mjs");
@@ -150,7 +167,7 @@ test("runCodexGeneration falls back to image files in the temp directory", async
   }
 });
 
-test("runCodexGeneration falls back to CODEX_HOME generated images", async () => {
+test("runCodexGeneration falls back to CODEX_HOME generated images from JSONL thread id", async () => {
   const tempRoot = await mkdtemp(path.join(tmpdir(), "codex-runner-home-test-"));
   const fakeCodex = path.join(tempRoot, "fake-codex.mjs");
   const codexHome = path.join(tempRoot, ".codex");
@@ -173,7 +190,7 @@ test("runCodexGeneration falls back to CODEX_HOME generated images", async () =>
       "const imageDir = path.join(process.env.CODEX_HOME, 'generated_images', sessionId);",
       "mkdirSync(imageDir, { recursive: true });",
       `writeFileSync(path.join(imageDir, 'generated.png'), Buffer.from([${pngBytes.join(",")}]))`,
-      "console.log(`session id: ${sessionId}`);",
+      "console.log(JSON.stringify({ type: 'thread.started', thread_id: sessionId }));",
       "console.log('image generated in CODEX_HOME only');",
     ].join("\n"),
   );

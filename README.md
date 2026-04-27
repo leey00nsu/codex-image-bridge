@@ -4,6 +4,8 @@ Small HTTP service that runs Codex CLI image generation for containerized apps.
 
 The service owns the Codex CLI and `CODEX_HOME`; client applications call it over HTTP and do not need Codex CLI installed.
 
+The runner uses Codex CLI's built-in `imagegen` skill with `codex exec --full-auto --json --enable image_generation`, low reasoning effort, and direct artifact recovery from `CODEX_HOME/generated_images`.
+
 ## API
 
 ### `GET /health`
@@ -129,6 +131,7 @@ CODEX_HOME=/app/.codex
 CODEX_BRIDGE_PORT=18080
 CODEX_BRIDGE_HOST=0.0.0.0
 # Optional:
+CODEX_BRIDGE_TIMEOUT_MS=900000
 CODEX_BRIDGE_JOB_TTL_MS=1800000
 CODEX_BRIDGE_MAX_CONCURRENT_JOBS=1
 ```
@@ -141,6 +144,8 @@ codex login status
 ```
 
 `codex login status` must report ChatGPT login. The OAuth files are stored in `/app/.codex`, so normal redeployments keep the login state.
+
+Use Codex CLI `0.124.0` or newer so `codex exec --full-auto`, `--json`, and `--enable image_generation` are available.
 
 ## Local Run
 
@@ -169,4 +174,4 @@ curl -sS "http://127.0.0.1:18080/v1/images/jobs/${JOB_ID}" \
 - Always set `CODEX_BRIDGE_TOKEN`.
 - Do not mount the same `CODEX_HOME` volume into unrelated applications.
 - Codex receives only a small environment allowlist: `PATH`, home/temp/locale fields, and `CODEX_HOME`.
-- The generated image must be in the request temp directory and must pass image magic-byte validation.
+- Generated images are recovered from the request temp directory or `CODEX_HOME/generated_images`, and must pass image magic-byte validation before being returned.
